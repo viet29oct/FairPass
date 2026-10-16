@@ -1,0 +1,31 @@
+{
+  "name": "fairpass",
+  "version": "1.0.0",
+  "description": "Hệ thống bán vé sự kiện bằng NFT - Đề tài 58",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "test:coverage": "hardhat coverage",
+    "test:gas": "REPORT_GAS=true hardhat test",
+    "deploy:local": "hardhat run scripts/deploy.js --network localhost",
+    "deploy:sepolia": "hardhat run scripts/deploy.js --network sepolia",
+    "verify": "hardhat run scripts/verify.js --network sepolia",
+    "node": "hardhat node",
+    "clean": "hardhat clean"
+  },
+  "keywords": [
+    "nft",
+    "ticket",
+    "blockchain",
+    "solidity",
+    "ethereum"
+  ],
+  "author": "viet29oct",
+  "license": "MIT",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^7.0.0",
+    "@openzeppelin/contracts": "^5.6.1",
+    "dotenv": "^18.0.8",
+    "hardhat": "^2.29.1"
+  }
+}
