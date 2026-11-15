@@ -21,6 +21,14 @@ coverage.json
 .DS_Store
 Thumbs.db
 
+# Backend: file upload chế độ local
+backend/uploads/
+
+# Playwright E2E output
+frontend/e2e/report/
+frontend/e2e/test-results/
+frontend/e2e/screenshots/
+
 # Frontend build
 frontend/dist/
 frontend/node_modules/
@@ -28,6 +36,7 @@ frontend/node_modules/
 # Gas reporter
 gas-report.txt
 
-# Deployment artifacts
-deployments/
+# Deployment artifacts (giữ lại sepolia.json để commit địa chỉ testnet)
+deployments/localhost.json
+deployments/hardhat.json
 ignition/deployments/

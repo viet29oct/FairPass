@@ -46,27 +46,34 @@ cp .env.example .env
 # Chạy test
 npx hardhat test
 
-# Deploy local
+# Chạy toàn bộ hệ thống local (4 terminal) — chi tiết: docs/DEMO.md
 npx hardhat node
-npx hardhat run scripts/deploy.js --network localhost
+npm run deploy:local && npm run seed:local
+cd backend  && npm install && npm run db:deploy && npm run dev
+cd frontend && npm install && npm run dev      # http://localhost:5173
 ```
 
 ## Cấu trúc dự án
 
 ```
-├── contracts/              # Smart contracts
-│   └── EventTicketNFT.sol
-├── test/                   # Test suite
-│   └── EventTicketNFT.test.js
-├── scripts/                # Deploy & utility scripts
-│   └── deploy.js
-├── frontend/               # React DApp
-│   ├── src/
-│   └── package.json
-├── hardhat.config.js        # Hardhat configuration
-├── package.json
-└── README.md
+├── contracts/EventTicketNFT.sol   # Smart contract ERC-721
+├── test/                          # 48 test Hardhat
+├── scripts/                       # deploy, seed, export-abi
+├── deployments/                   # địa chỉ contract theo mạng
+├── backend/                       # Express + Prisma + PostgreSQL (indexer, API, IPFS)
+├── frontend/                      # React + Vite + Tailwind (DApp) + e2e/ Playwright
+├── design-system/fairpass/        # Đặc tả giao diện (MASTER.md)
+├── docs/                          # DEMO.md, PROGRESS.md
+├── docker-compose.yml             # PostgreSQL (tuỳ chọn)
+└── hardhat.config.js
 ```
+
+## Tài liệu
+
+- [`docs/PROGRESS.md`](docs/PROGRESS.md) — tiến độ dự án và việc tiếp theo
+- [`docs/DEMO.md`](docs/DEMO.md) — hướng dẫn chạy & kịch bản demo từ A đến Z
+- [`design-system/fairpass/MASTER.md`](design-system/fairpass/MASTER.md) — đặc tả giao diện
+- [`backend/README.md`](backend/README.md) · [`frontend/README.md`](frontend/README.md)
 
 ## Quy trình phát triển
 

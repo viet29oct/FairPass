@@ -1,55 +1,41 @@
 const hre = require("hardhat");
+const { exportAbi } = require("./export-abi");
 
 async function main() {
-  console.log("🚀 Deploying EventTicketNFT...\n");
-
   const [deployer] = await hre.ethers.getSigners();
+  const { chainId } = await hre.ethers.provider.getNetwork();
+  console.log(`🚀 Deploy EventTicketNFT lên ${hre.network.name} (chainId ${chainId})`);
   console.log("Deployer:", deployer.address);
-  console.log(
-    "Balance:",
-    hre.ethers.formatEther(await hre.ethers.provider.getBalance(deployer.address)),
-    "ETH\n"
-  );
+  console.log("Số dư:", hre.ethers.formatEther(await hre.ethers.provider.getBalance(deployer.address)), "ETH\n");
 
-  // Deploy contract
-  const EventTicketNFT = await hre.ethers.getContractFactory("EventTicketNFT");
-  const contract = await EventTicketNFT.deploy();
+  const contract = await hre.ethers.deployContract("EventTicketNFT");
   await contract.waitForDeployment();
+  const receipt = await contract.deploymentTransaction().wait();
+  const address = await contract.getAddress();
+  console.log("✅ Đã deploy tại:", address, "(block", receipt.blockNumber + ")");
 
-  const contractAddress = await contract.getAddress();
-  console.log("✅ EventTicketNFT deployed to:", contractAddress);
-
-  // Lưu thông tin deploy
-  const deployInfo = {
-    contractAddress,
-    deployer: deployer.address,
+  // Lưu địa chỉ + ABI cho frontend/backend
+  exportAbi({
     network: hre.network.name,
-    timestamp: new Date().toISOString(),
-  };
+    chainId: Number(chainId),
+    address,
+    deployBlock: receipt.blockNumber,
+    deployer: deployer.address,
+  });
 
-  console.log("\n📋 Deploy Info:", JSON.stringify(deployInfo, null, 2));
-
-  // Nếu deploy trên testnet → verify
   if (hre.network.name === "sepolia") {
-    console.log("\n⏳ Waiting for block confirmations...");
+    console.log("\n⏳ Chờ 6 block xác nhận rồi verify trên Etherscan...");
     await contract.deploymentTransaction().wait(6);
-
-    console.log("🔍 Verifying on Etherscan...");
     try {
-      await hre.run("verify:verify", {
-        address: contractAddress,
-        constructorArguments: [],
-      });
-      console.log("✅ Verified on Etherscan!");
-    } catch (error) {
-      console.log("❌ Verification failed:", error.message);
+      await hre.run("verify:verify", { address, constructorArguments: [] });
+      console.log("✅ Đã verify trên Etherscan");
+    } catch (err) {
+      console.log("❌ Verify thất bại:", err.message);
     }
   }
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    console.error(error);
-    process.exit(1);
-  });
+main().catch((err) => {
+  console.error(err);
+  process.exitCode = 1;
+});

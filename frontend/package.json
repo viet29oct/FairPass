@@ -1,0 +1,33 @@
+{
+  "name": "fairpass-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:report": "playwright show-report e2e/report"
+  },
+  "dependencies": {
+    "@fortawesome/fontawesome-svg-core": "^7.3.1",
+    "@fortawesome/free-solid-svg-icons": "^7.3.1",
+    "@fortawesome/react-fontawesome": "^3.5.0",
+    "ethers": "^6.17.0",
+    "html5-qrcode": "^2.3.8",
+    "motion": "^14.14.0",
+    "qrcode.react": "^4.2.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router": "^7.18.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "@tailwindcss/vite": "^4.3.5",
+    "@vitejs/plugin-react": "^6.3.0",
+    "tailwindcss": "^4.3.5",
+    "vite": "^8.3.8"
+  }
+}

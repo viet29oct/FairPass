@@ -1,0 +1,218 @@
+@import "tailwindcss";
+
+/* ═══════════════════════ DESIGN TOKENS (MASTER.md §2, §3, §7) ═══════════════════════ */
+@theme {
+  --color-bg: #020617;
+  --color-card: #0e1223;
+  --color-muted: #1a1e2f;
+  --color-border: #334155;
+  --color-fg: #f8fafc;
+  --color-muted-fg: #94a3b8;
+  --color-primary: #06b6d4;
+  --color-primary-hover: #22d3ee;
+  --color-on-primary: #020617;
+  --color-success: #16a34a;
+  --color-warning: #f59e0b;
+  --color-danger: #dc2626;
+  --color-danger-text: #f87171;
+
+  --font-sans: "Be Vietnam Pro", "Noto Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  --animate-shake: shake 300ms var(--ease-standard);
+  --animate-stamp: stamp 450ms var(--ease-out-expo) both;
+  --animate-scanline: scanline 2.2s ease-in-out infinite alternate;
+  --animate-corner: corner 1.6s ease-in-out infinite;
+  --animate-toast-timer: toast-timer linear forwards;
+  --animate-shimmer: shimmer 1.6s ease-in-out infinite;
+
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-6px); }
+    40% { transform: translateX(6px); }
+    60% { transform: translateX(-4px); }
+    80% { transform: translateX(4px); }
+  }
+  @keyframes stamp {
+    0% { opacity: 0; transform: rotate(-12deg) scale(1.8); }
+    60% { opacity: 1; transform: rotate(-12deg) scale(0.92); }
+    100% { opacity: 1; transform: rotate(-12deg) scale(1); }
+  }
+  @keyframes scanline {
+    from { transform: translateY(0); }
+    to { transform: translateY(var(--scan-distance, 240px)); }
+  }
+  @keyframes corner {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.04); }
+  }
+  @keyframes toast-timer {
+    from { transform: scaleX(1); }
+    to { transform: scaleX(0); }
+  }
+  @keyframes shimmer {
+    from { background-position: -200% 0; }
+    to { background-position: 200% 0; }
+  }
+}
+
+/* ═══════════════════════ BASE ═══════════════════════ */
+@layer base {
+  html {
+    color-scheme: dark;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply bg-bg text-fg font-sans antialiased;
+    line-height: 1.5;
+    min-height: 100dvh;
+  }
+  button, [role="button"], a, label[for], select, summary {
+    cursor: pointer;
+  }
+  button:disabled { cursor: not-allowed; }
+  :focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  ::selection { background: color-mix(in srgb, var(--color-primary) 35%, transparent); }
+  input[type="number"]::-webkit-inner-spin-button { opacity: 0.4; }
+}
+
+/* ═══════════════════════ TICKET CARD — vé thật & hologram (MASTER §7.1) ═══════════════════════ */
+@layer components {
+  .ticket {
+    --rx: 0deg;
+    --ry: 0deg;
+    --mx: 50%;
+    position: relative;
+    transform: perspective(900px) rotateX(var(--rx)) rotateY(var(--ry)) translateY(0);
+    transition: transform 400ms var(--ease-out-expo), box-shadow 400ms var(--ease-out-expo);
+    transform-style: preserve-3d;
+    will-change: transform;
+  }
+  .ticket[data-hover="true"] {
+    transform: perspective(900px) rotateX(var(--rx)) rotateY(var(--ry)) translateY(-4px);
+    transition-duration: 120ms;
+    box-shadow: 0 18px 40px -16px rgb(6 182 212 / 0.35), 0 8px 16px -8px rgb(0 0 0 / 0.6);
+  }
+  /* Dải phản quang lướt chéo */
+  .ticket-sheen {
+    pointer-events: none;
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    overflow: hidden;
+  }
+  .ticket-sheen::after {
+    content: "";
+    position: absolute;
+    inset: -50%;
+    background: linear-gradient(
+      115deg,
+      transparent 38%,
+      rgb(6 182 212 / 0.18) 45%,
+      rgb(167 139 250 / 0.16) 50%,
+      rgb(255 255 255 / 0.14) 54%,
+      transparent 62%
+    );
+    mix-blend-mode: color-dodge;
+    transform: translateX(-60%);
+    opacity: 0;
+  }
+  .ticket[data-hover="true"] .ticket-sheen::after {
+    opacity: 1;
+    transform: translateX(calc(var(--mx) - 20%));
+    transition: transform 900ms var(--ease-out-expo), opacity 200ms;
+  }
+  .ticket[data-used="true"] .ticket-sheen { display: none; }
+
+  /* Cuống vé + đường răng cưa */
+  .ticket-stub {
+    transition: transform 320ms var(--ease-out-expo);
+    transform-origin: left center;
+  }
+  .ticket[data-tear="true"] .ticket-stub {
+    transform: translateX(6px) rotate(1.5deg);
+  }
+  .ticket-perforation {
+    position: absolute;
+    top: 14px;
+    bottom: 14px;
+    left: 0;
+    border-left: 2px dashed var(--color-border);
+  }
+  .ticket-notch {
+    position: absolute;
+    left: -11px;
+    width: 22px;
+    height: 22px;
+    border-radius: 9999px;
+    background: var(--color-bg);
+  }
+
+  .stamp {
+    animation: var(--animate-stamp);
+  }
+
+  /* Khung quét QR (MASTER §7.4) */
+  .scan-corner {
+    position: absolute;
+    width: 28px;
+    height: 28px;
+    border-color: var(--color-primary);
+    animation: var(--animate-corner);
+  }
+  .scanline {
+    position: absolute;
+    left: 8%;
+    right: 8%;
+    top: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--color-primary), transparent);
+    box-shadow: 0 0 12px 2px rgb(6 182 212 / 0.6), 0 -18px 24px -4px rgb(6 182 212 / 0.15);
+    animation: var(--animate-scanline);
+  }
+
+  .skeleton {
+    background: linear-gradient(90deg, var(--color-muted) 0%, #252a3d 50%, var(--color-muted) 100%);
+    background-size: 200% 100%;
+    animation: var(--animate-shimmer);
+  }
+
+  /* Thanh tiến độ: scaleX thay vì width (GPU) */
+  .progress-fill {
+    transform-origin: left center;
+    transition: transform 700ms ease-out;
+  }
+}
+
+/* ═══════════════════════ REDUCED MOTION (MASTER §7) ═══════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  .ticket,
+  .ticket[data-hover="true"] {
+    transform: none !important;
+  }
+  .ticket-sheen,
+  .scanline {
+    display: none;
+  }
+  .ticket-stub { transition: none; }
+  .ticket[data-tear="true"] .ticket-stub { transform: none; }
+  .stamp { animation: none; transform: rotate(-12deg); }
+  .scan-corner,
+  .skeleton,
+  .animate-ping {
+    animation: none !important;
+  }
+  .animate-shake {
+    animation: none !important;
+    outline: 2px solid var(--color-danger-text);
+    outline-offset: 2px;
+  }
+  .progress-fill { transition: none; }
+}

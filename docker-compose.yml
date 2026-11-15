@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fairpass-db
+    environment:
+      POSTGRES_USER: fairpass
+      POSTGRES_PASSWORD: fairpass
+      POSTGRES_DB: fairpass
+    ports:
+      - "5433:5432" # 5433 để không đụng PostgreSQL cài sẵn trên máy
+    volumes:
+      - fairpass-db:/var/lib/postgresql/data
+
+volumes:
+  fairpass-db:
