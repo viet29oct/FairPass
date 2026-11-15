@@ -10,6 +10,8 @@ module.exports = {
         enabled: true,
         runs: 200,
       },
+      evmVersion: "cancun", // OpenZeppelin 5.x dùng opcode mcopy
+      viaIR: true,
     },
   },
   networks: {

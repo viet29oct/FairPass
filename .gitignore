@@ -28,6 +28,7 @@ frontend/node_modules/
 # Gas reporter
 gas-report.txt
 
-# Deployment artifacts
-deployments/
+# Deployment artifacts (giữ lại sepolia.json để commit địa chỉ testnet)
+deployments/localhost.json
+deployments/hardhat.json
 ignition/deployments/

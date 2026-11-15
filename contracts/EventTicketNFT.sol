@@ -1,79 +1,122 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
+import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
 /**
- * @title EventTicketNFT
- * @author Đề tài 58 — Lập trình Blockchain
- * @notice Hệ thống bán vé sự kiện bằng NFT với cơ chế chống vé giả và đầu cơ
- * @dev Kế thừa ERC721URIStorage, AccessControl, ReentrancyGuard, Pausable
+ * @title  EventTicketNFT (FairPass)
+ * @notice Hệ thống bán vé sự kiện dạng NFT (ERC-721) chống đầu cơ và chống vé giả.
  *
- * Cơ chế chống đầu cơ:
- *   1. Giới hạn số vé mỗi ví (maxTicketsPerWallet)
- *   2. Giá trần bán lại (resalePriceCap — phần trăm so với giá gốc)
+ * Chống đầu cơ:
+ *   1. Giới hạn số vé mỗi ví (mua sơ cấp + nắm giữ).
+ *   2. Giá trần bán lại = giá gốc × resaleCapPercent / 100.
+ *   3. Chặn chuyển nhượng tự do: vé chỉ đổi chủ qua chợ bán lại nội bộ,
+ *      nên không thể lách giá trần bằng transferFrom / sàn NFT bên ngoài.
  *
- * Cơ chế chống vé giả:
- *   1. Mỗi vé là NFT duy nhất trên blockchain
- *   2. Soát vé bằng chữ ký số (ecrecover) — xác thực chủ sở hữu thật
+ * Chống vé giả:
+ *   1. Mỗi vé là một NFT duy nhất, quyền sở hữu xác minh trên blockchain.
+ *   2. Soát vé bằng chữ ký EIP-712 có thời hạn của chủ vé (QR động):
+ *      contract khôi phục địa chỉ ký (ECDSA) và so với ownerOf(tokenId).
+ *
+ * Tài chính:
+ *   - Tiền bán vé sơ cấp được giữ trong contract (escrow) tới khi sự kiện bắt đầu.
+ *   - Sự kiện bị huỷ → người giữ vé tự rút lại giá gốc (pull payment), vé bị burn.
  */
-contract EventTicketNFT is
-    ERC721URIStorage,
-    AccessControl,
-    ReentrancyGuard,
-    Pausable
-{
+contract EventTicketNFT is ERC721, AccessControl, ReentrancyGuard, Pausable, EIP712 {
     // ═══════════════════════════════════════════════════════════════
-    //                          ROLES
+    //                          CONSTANTS
     // ═══════════════════════════════════════════════════════════════
 
     bytes32 public constant ORGANIZER_ROLE = keccak256("ORGANIZER_ROLE");
+
+    /// @dev EIP-712 typehash cho thông điệp soát vé
+    bytes32 public constant CHECKIN_TYPEHASH =
+        keccak256("CheckIn(uint256 tokenId,uint256 deadline)");
+
+    /// @notice Thời hạn tối đa của một mã QR soát vé
+    uint256 public constant MAX_QR_VALIDITY = 10 minutes;
+
+    uint256 public constant MAX_TIERS = 10;
 
     // ═══════════════════════════════════════════════════════════════
     //                       DATA STRUCTURES
     // ═══════════════════════════════════════════════════════════════
 
-    struct Event {
-        uint256 eventId;
+    struct EventInput {
         string name;
-        address organizer;
-        uint256 date; // Timestamp ngày diễn ra
         string venue;
-        uint256 ticketPrice; // Giá vé (wei)
-        uint256 maxTickets; // Tổng số vé tối đa
-        uint256 ticketsSold; // Số vé đã bán
-        uint256 maxTicketsPerWallet; // Giới hạn vé/ví (chống đầu cơ)
-        uint256 resalePriceCap; // % giá trần bán lại (vd: 110 = 110%)
-        bool isActive;
+        uint64 startTime; // Thời điểm bắt đầu (unix)
+        string metadataURI; // ipfs:// thông tin + poster sự kiện
+        uint32 maxPerWallet; // Giới hạn vé mỗi ví
+        uint16 resaleCapPercent; // Giá trần bán lại, vd 110 = 110% giá gốc
+    }
+
+    struct TierInput {
+        string name; // VIP, Thường, ...
+        uint256 price; // wei
+        uint32 supply;
+        string metadataURI; // ipfs:// metadata NFT của hạng vé
+    }
+
+    struct EventInfo {
+        address organizer;
+        string name;
+        string venue;
+        uint64 startTime;
+        string metadataURI;
+        uint32 maxPerWallet;
+        uint16 resaleCapPercent;
+        bool cancelled;
+        bool withdrawn;
+        uint256 revenue; // Tiền đang giữ trong escrow
+    }
+
+    struct Tier {
+        string name;
+        uint256 price;
+        uint32 supply;
+        uint32 sold;
+        string metadataURI;
     }
 
     struct Ticket {
-        uint256 tokenId;
         uint256 eventId;
-        uint256 originalPrice;
-        bool isUsed; // Đã soát vé
-        bool isForSale; // Đang rao bán lại
-        uint256 resalePrice;
+        uint256 tierId;
+        uint256 pricePaid; // Giá mua sơ cấp — cơ sở tính giá trần & hoàn tiền
+        bool used;
+    }
+
+    struct Listing {
+        address seller;
+        uint256 price;
     }
 
     // ═══════════════════════════════════════════════════════════════
     //                          STORAGE
     // ═══════════════════════════════════════════════════════════════
 
-    mapping(uint256 => Event) public events;
-    uint256 public nextEventId;
+    uint256 public nextEventId = 1;
+    uint256 public nextTokenId = 1;
 
-    mapping(uint256 => Ticket) public tickets;
-    uint256 public nextTokenId;
+    mapping(uint256 => EventInfo) private _events;
+    mapping(uint256 => Tier[]) private _tiers;
+    mapping(uint256 => Ticket) private _tickets;
+    mapping(uint256 => Listing) private _listings;
 
-    // eventId => wallet => số vé đã mua
-    mapping(uint256 => mapping(address => uint256)) public ticketsPurchased;
+    /// eventId => staff => được phép soát vé
+    mapping(uint256 => mapping(address => bool)) public isStaff;
+    /// eventId => ví => số vé đã mua sơ cấp
+    mapping(uint256 => mapping(address => uint256)) public primaryPurchased;
+    /// eventId => ví => số vé đang nắm giữ
+    mapping(uint256 => mapping(address => uint256)) public ownedPerEvent;
 
-    // eventId => tổng tiền bán vé chưa rút
-    mapping(uint256 => uint256) public eventFunds;
+    /// @dev Bật trong buyResale để cho phép chuyển NFT nội bộ
+    bool private _inMarketTransfer;
 
     // ═══════════════════════════════════════════════════════════════
     //                          EVENTS
@@ -81,486 +124,437 @@ contract EventTicketNFT is
 
     event EventCreated(
         uint256 indexed eventId,
-        string name,
         address indexed organizer,
-        uint256 ticketPrice,
-        uint256 maxTickets
+        string name,
+        uint64 startTime,
+        string metadataURI
     );
-    event EventToggled(uint256 indexed eventId, bool isActive);
-    event TicketPurchased(
-        address indexed buyer,
+    event TierCreated(
         uint256 indexed eventId,
-        uint256 tokenId
+        uint256 indexed tierId,
+        string name,
+        uint256 price,
+        uint32 supply
     );
-    event TicketListedForResale(uint256 indexed tokenId, uint256 price);
-    event ResaleListingCancelled(uint256 indexed tokenId);
-    event TicketResold(
+    event EventCancelled(uint256 indexed eventId);
+    event StaffUpdated(uint256 indexed eventId, address indexed staff, bool allowed);
+    event TicketPurchased(
         uint256 indexed tokenId,
-        address indexed from,
-        address indexed to,
+        uint256 indexed eventId,
+        uint256 indexed tierId,
+        address buyer,
         uint256 price
     );
-    event TicketCheckedIn(uint256 indexed tokenId, address indexed holder);
-    event FundsWithdrawn(
-        uint256 indexed eventId,
-        address indexed organizer,
-        uint256 amount
+    event TicketListed(uint256 indexed tokenId, address indexed seller, uint256 price);
+    event ListingCancelled(uint256 indexed tokenId);
+    event TicketResold(
+        uint256 indexed tokenId,
+        address indexed seller,
+        address indexed buyer,
+        uint256 price
     );
+    event TicketCheckedIn(uint256 indexed tokenId, uint256 indexed eventId, address holder, address staff);
+    event RefundClaimed(uint256 indexed tokenId, address indexed holder, uint256 amount);
+    event RevenueWithdrawn(uint256 indexed eventId, address indexed organizer, uint256 amount);
+
+    // ═══════════════════════════════════════════════════════════════
+    //                          ERRORS
+    // ═══════════════════════════════════════════════════════════════
+
+    error EventNotFound();
+    error InvalidEventData();
+    error InvalidTier();
+    error NotEventOrganizer();
+    error NotStaff();
+    error EventIsCancelled();
+    error EventNotCancelled();
+    error EventAlreadyStarted();
+    error EventNotStarted();
+    error AlreadyWithdrawn();
+    error SoldOut();
+    error InvalidQuantity();
+    error IncorrectPayment();
+    error WalletLimitExceeded();
+    error NotTicketOwner();
+    error TicketAlreadyUsed();
+    error PriceExceedsCap();
+    error NotListed();
+    error CannotBuyOwnTicket();
+    error TransfersDisabled();
+    error InvalidSignature();
+    error QRExpired();
+    error QRDeadlineTooFar();
+    error NothingToWithdraw();
+    error PaymentFailed();
 
     // ═══════════════════════════════════════════════════════════════
     //                        CONSTRUCTOR
     // ═══════════════════════════════════════════════════════════════
 
-    constructor() ERC721("EventTicketNFT", "ETNFT") {
+    constructor() ERC721("FairPass Ticket", "FPT") EIP712("FairPass", "1") {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ORGANIZER_ROLE, msg.sender);
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //                    EVENT MANAGEMENT
-    //                (Chỉ ORGANIZER_ROLE)
+    //                         MODIFIERS
+    // ═══════════════════════════════════════════════════════════════
+
+    modifier eventExists(uint256 eventId) {
+        if (eventId == 0 || eventId >= nextEventId) revert EventNotFound();
+        _;
+    }
+
+    modifier onlyEventOrganizer(uint256 eventId) {
+        if (_events[eventId].organizer != msg.sender) revert NotEventOrganizer();
+        _;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //                    QUẢN LÝ SỰ KIỆN (ORGANIZER)
     // ═══════════════════════════════════════════════════════════════
 
     /**
-     * @notice Tạo sự kiện mới
-     * @param _name Tên sự kiện
-     * @param _date Timestamp ngày diễn ra
-     * @param _venue Địa điểm
-     * @param _ticketPrice Giá vé (wei)
-     * @param _maxTickets Tổng số vé tối đa
-     * @param _maxTicketsPerWallet Giới hạn vé mỗi ví (chống đầu cơ)
-     * @param _resalePriceCap Phần trăm giá trần bán lại (vd: 110 = 110% giá gốc)
+     * @notice Tạo sự kiện mới cùng các hạng vé
      */
     function createEvent(
-        string memory _name,
-        uint256 _date,
-        string memory _venue,
-        uint256 _ticketPrice,
-        uint256 _maxTickets,
-        uint256 _maxTicketsPerWallet,
-        uint256 _resalePriceCap
-    ) external onlyRole(ORGANIZER_ROLE) returns (uint256) {
-        require(bytes(_name).length > 0, "Name required");
-        require(_date > block.timestamp, "Date must be in the future");
-        require(_maxTickets > 0, "Max tickets must be > 0");
-        require(_maxTicketsPerWallet > 0, "Max per wallet must be > 0");
-        require(
-            _maxTicketsPerWallet <= _maxTickets,
-            "Per wallet limit exceeds max tickets"
-        );
-        require(
-            _resalePriceCap >= 100,
-            "Resale cap must be >= 100%"
-        );
+        EventInput calldata info,
+        TierInput[] calldata tiers
+    ) external onlyRole(ORGANIZER_ROLE) whenNotPaused returns (uint256 eventId) {
+        if (
+            bytes(info.name).length == 0 ||
+            info.startTime <= block.timestamp ||
+            info.maxPerWallet == 0 ||
+            info.resaleCapPercent < 100
+        ) revert InvalidEventData();
+        if (tiers.length == 0 || tiers.length > MAX_TIERS) revert InvalidTier();
 
-        uint256 eventId = nextEventId++;
+        eventId = nextEventId++;
+        EventInfo storage evt = _events[eventId];
+        evt.organizer = msg.sender;
+        evt.name = info.name;
+        evt.venue = info.venue;
+        evt.startTime = info.startTime;
+        evt.metadataURI = info.metadataURI;
+        evt.maxPerWallet = info.maxPerWallet;
+        evt.resaleCapPercent = info.resaleCapPercent;
 
-        events[eventId] = Event({
-            eventId: eventId,
-            name: _name,
-            organizer: msg.sender,
-            date: _date,
-            venue: _venue,
-            ticketPrice: _ticketPrice,
-            maxTickets: _maxTickets,
-            ticketsSold: 0,
-            maxTicketsPerWallet: _maxTicketsPerWallet,
-            resalePriceCap: _resalePriceCap,
-            isActive: true
-        });
+        emit EventCreated(eventId, msg.sender, info.name, info.startTime, info.metadataURI);
 
-        emit EventCreated(eventId, _name, msg.sender, _ticketPrice, _maxTickets);
-        return eventId;
+        for (uint256 i = 0; i < tiers.length; i++) {
+            TierInput calldata t = tiers[i];
+            if (bytes(t.name).length == 0 || t.supply == 0) revert InvalidTier();
+            _tiers[eventId].push(
+                Tier({name: t.name, price: t.price, supply: t.supply, sold: 0, metadataURI: t.metadataURI})
+            );
+            emit TierCreated(eventId, i, t.name, t.price, t.supply);
+        }
     }
 
     /**
-     * @notice Bật/tắt trạng thái sự kiện
+     * @notice Thêm / gỡ nhân viên soát vé cho sự kiện
      */
-    function toggleEventActive(uint256 _eventId) external onlyRole(ORGANIZER_ROLE) {
-        require(_eventId < nextEventId, "Event does not exist");
-        require(
-            events[_eventId].organizer == msg.sender ||
-                hasRole(DEFAULT_ADMIN_ROLE, msg.sender),
-            "Not event organizer"
-        );
-
-        events[_eventId].isActive = !events[_eventId].isActive;
-        emit EventToggled(_eventId, events[_eventId].isActive);
+    function setStaff(
+        uint256 eventId,
+        address staff,
+        bool allowed
+    ) external eventExists(eventId) onlyEventOrganizer(eventId) {
+        isStaff[eventId][staff] = allowed;
+        emit StaffUpdated(eventId, staff, allowed);
     }
 
     /**
-     * @notice Ban tổ chức rút tiền bán vé
+     * @notice Huỷ sự kiện. Organizer chỉ huỷ được trước giờ diễn;
+     *         admin có thể huỷ bất cứ lúc nào nếu tiền chưa bị rút.
      */
-    function withdrawEventFunds(
-        uint256 _eventId
-    ) external onlyRole(ORGANIZER_ROLE) nonReentrant {
-        require(_eventId < nextEventId, "Event does not exist");
-        require(
-            events[_eventId].organizer == msg.sender,
-            "Not event organizer"
-        );
+    function cancelEvent(uint256 eventId) external eventExists(eventId) {
+        EventInfo storage evt = _events[eventId];
+        bool isAdmin = hasRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        if (evt.organizer != msg.sender && !isAdmin) revert NotEventOrganizer();
+        if (evt.cancelled) revert EventIsCancelled();
+        if (evt.withdrawn) revert AlreadyWithdrawn();
+        if (!isAdmin && block.timestamp >= evt.startTime) revert EventAlreadyStarted();
 
-        uint256 amount = eventFunds[_eventId];
-        require(amount > 0, "No funds to withdraw");
+        evt.cancelled = true;
+        emit EventCancelled(eventId);
+    }
 
-        // Effects trước Interactions (CEI pattern)
-        eventFunds[_eventId] = 0;
+    /**
+     * @notice Organizer rút tiền bán vé sau khi sự kiện đã bắt đầu
+     */
+    function withdrawRevenue(
+        uint256 eventId
+    ) external eventExists(eventId) onlyEventOrganizer(eventId) nonReentrant whenNotPaused {
+        EventInfo storage evt = _events[eventId];
+        if (evt.cancelled) revert EventIsCancelled();
+        if (block.timestamp < evt.startTime) revert EventNotStarted();
+        uint256 amount = evt.revenue;
+        if (amount == 0) revert NothingToWithdraw();
+
+        // Effects
+        evt.revenue = 0;
+        evt.withdrawn = true;
 
         // Interactions
-        (bool sent, ) = payable(msg.sender).call{value: amount}("");
-        require(sent, "Transfer failed");
-
-        emit FundsWithdrawn(_eventId, msg.sender, amount);
+        _sendValue(msg.sender, amount);
+        emit RevenueWithdrawn(eventId, msg.sender, amount);
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //                      BUY TICKET
+    //                        MUA VÉ SƠ CẤP
     // ═══════════════════════════════════════════════════════════════
 
     /**
-     * @notice Mua vé cho sự kiện
-     * @param _eventId ID sự kiện
-     * @param _tokenURI URI metadata trên IPFS
+     * @notice Mua `quantity` vé hạng `tierId` của sự kiện `eventId`
      */
     function buyTicket(
-        uint256 _eventId,
-        string memory _tokenURI
-    ) external payable whenNotPaused nonReentrant {
-        Event storage evt = events[_eventId];
+        uint256 eventId,
+        uint256 tierId,
+        uint256 quantity
+    ) external payable eventExists(eventId) whenNotPaused nonReentrant {
+        EventInfo storage evt = _events[eventId];
+        if (evt.cancelled) revert EventIsCancelled();
+        if (block.timestamp >= evt.startTime) revert EventAlreadyStarted();
+        if (tierId >= _tiers[eventId].length) revert InvalidTier();
+        if (quantity == 0) revert InvalidQuantity();
 
-        // Checks
-        require(_eventId < nextEventId, "Event does not exist");
-        require(evt.isActive, "Event not active");
-        require(block.timestamp < evt.date, "Event already passed");
-        require(evt.ticketsSold < evt.maxTickets, "Sold out");
-        require(msg.value == evt.ticketPrice, "Incorrect payment amount");
-        require(
-            ticketsPurchased[_eventId][msg.sender] < evt.maxTicketsPerWallet,
-            "Exceeds per-wallet limit"
-        );
+        Tier storage tier = _tiers[eventId][tierId];
+        if (uint256(tier.sold) + quantity > tier.supply) revert SoldOut();
+        if (msg.value != tier.price * quantity) revert IncorrectPayment();
+        if (
+            primaryPurchased[eventId][msg.sender] + quantity > evt.maxPerWallet ||
+            ownedPerEvent[eventId][msg.sender] + quantity > evt.maxPerWallet
+        ) revert WalletLimitExceeded();
 
         // Effects
-        uint256 tokenId = nextTokenId++;
-        evt.ticketsSold++;
-        ticketsPurchased[_eventId][msg.sender]++;
-        eventFunds[_eventId] += msg.value;
+        tier.sold += uint32(quantity);
+        primaryPurchased[eventId][msg.sender] += quantity;
+        evt.revenue += msg.value;
 
-        tickets[tokenId] = Ticket({
-            tokenId: tokenId,
-            eventId: _eventId,
-            originalPrice: msg.value,
-            isUsed: false,
-            isForSale: false,
-            resalePrice: 0
-        });
+        // Mint (ownedPerEvent được cập nhật trong _update)
+        for (uint256 i = 0; i < quantity; i++) {
+            uint256 tokenId = nextTokenId++;
+            _tickets[tokenId] = Ticket({eventId: eventId, tierId: tierId, pricePaid: tier.price, used: false});
+            _safeMint(msg.sender, tokenId);
+            emit TicketPurchased(tokenId, eventId, tierId, msg.sender, tier.price);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //                  CHỢ BÁN LẠI — CHỐNG ĐẦU CƠ
+    // ═══════════════════════════════════════════════════════════════
+
+    /// @notice Giá bán lại tối đa của một vé
+    function maxResalePrice(uint256 tokenId) public view returns (uint256) {
+        _requireOwned(tokenId);
+        Ticket storage t = _tickets[tokenId];
+        return (t.pricePaid * _events[t.eventId].resaleCapPercent) / 100;
+    }
+
+    /**
+     * @notice Rao bán lại vé (hoặc đổi giá rao). Giá phải ≤ giá trần.
+     */
+    function listForResale(uint256 tokenId, uint256 price) external whenNotPaused {
+        if (ownerOf(tokenId) != msg.sender) revert NotTicketOwner();
+        Ticket storage t = _tickets[tokenId];
+        _requireTradable(t);
+        if (price == 0 || price > maxResalePrice(tokenId)) revert PriceExceedsCap();
+
+        _listings[tokenId] = Listing({seller: msg.sender, price: price});
+        emit TicketListed(tokenId, msg.sender, price);
+    }
+
+    /// @notice Huỷ rao bán
+    function cancelListing(uint256 tokenId) external {
+        if (ownerOf(tokenId) != msg.sender) revert NotTicketOwner();
+        if (_listings[tokenId].seller == address(0)) revert NotListed();
+        delete _listings[tokenId];
+        emit ListingCancelled(tokenId);
+    }
+
+    /**
+     * @notice Mua vé đang được rao bán lại. Tiền chuyển thẳng cho người bán.
+     */
+    function buyResale(uint256 tokenId) external payable whenNotPaused nonReentrant {
+        Listing memory listing = _listings[tokenId];
+        if (listing.seller == address(0)) revert NotListed();
+        if (listing.seller == msg.sender) revert CannotBuyOwnTicket();
+        if (msg.value != listing.price) revert IncorrectPayment();
+
+        Ticket storage t = _tickets[tokenId];
+        _requireTradable(t);
+        if (ownedPerEvent[t.eventId][msg.sender] + 1 > _events[t.eventId].maxPerWallet)
+            revert WalletLimitExceeded();
+
+        // Effects
+        delete _listings[tokenId];
+        _inMarketTransfer = true;
+        _transfer(listing.seller, msg.sender, tokenId);
+        _inMarketTransfer = false;
 
         // Interactions
-        _safeMint(msg.sender, tokenId);
-        _setTokenURI(tokenId, _tokenURI);
-
-        emit TicketPurchased(msg.sender, _eventId, tokenId);
+        _sendValue(listing.seller, msg.value);
+        emit TicketResold(tokenId, listing.seller, msg.sender, msg.value);
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //                   RESALE — CHỐNG ĐẦU CƠ
+    //              SOÁT VÉ — CHỮ KÝ SỐ EIP-712 (CHỐNG GIẢ)
     // ═══════════════════════════════════════════════════════════════
 
-    /**
-     * @notice Rao bán lại vé với giá trần
-     * @param _tokenId ID vé (NFT)
-     * @param _price Giá bán lại (wei)
-     */
-    function listForResale(uint256 _tokenId, uint256 _price) external {
-        require(ownerOf(_tokenId) == msg.sender, "Not ticket owner");
-        require(!tickets[_tokenId].isUsed, "Ticket already used");
-        require(!tickets[_tokenId].isForSale, "Already listed");
-
-        // Chống đầu cơ: kiểm tra giá trần
-        uint256 eventId = tickets[_tokenId].eventId;
-        uint256 maxPrice = (tickets[_tokenId].originalPrice *
-            events[eventId].resalePriceCap) / 100;
-        require(_price <= maxPrice, "Price exceeds resale cap");
-        require(_price > 0, "Price must be > 0");
-
-        tickets[_tokenId].isForSale = true;
-        tickets[_tokenId].resalePrice = _price;
-
-        emit TicketListedForResale(_tokenId, _price);
+    /// @notice Digest EIP-712 mà chủ vé cần ký (FE dùng signTypedData)
+    function checkInDigest(uint256 tokenId, uint256 deadline) public view returns (bytes32) {
+        return _hashTypedDataV4(keccak256(abi.encode(CHECKIN_TYPEHASH, tokenId, deadline)));
     }
 
     /**
-     * @notice Mua vé đang rao bán lại
-     * @param _tokenId ID vé (NFT)
+     * @notice Staff quét QR (tokenId, deadline, signature) và soát vé
+     * @dev    Chữ ký phải do chủ vé hiện tại ký, còn hạn, vé chưa dùng.
      */
-    function buyResaleTicket(
-        uint256 _tokenId
-    ) external payable whenNotPaused nonReentrant {
-        Ticket storage ticket = tickets[_tokenId];
-        require(ticket.isForSale, "Ticket not for sale");
-        require(!ticket.isUsed, "Ticket already used");
-        require(msg.value == ticket.resalePrice, "Incorrect payment amount");
+    function checkIn(uint256 tokenId, uint256 deadline, bytes calldata signature) external whenNotPaused {
+        address holder = ownerOf(tokenId);
+        Ticket storage t = _tickets[tokenId];
+        EventInfo storage evt = _events[t.eventId];
 
-        address seller = ownerOf(_tokenId);
-        require(seller != msg.sender, "Cannot buy own ticket");
+        if (evt.organizer != msg.sender && !isStaff[t.eventId][msg.sender]) revert NotStaff();
+        if (evt.cancelled) revert EventIsCancelled();
+        if (t.used) revert TicketAlreadyUsed();
+        if (block.timestamp > deadline) revert QRExpired();
+        if (deadline > block.timestamp + MAX_QR_VALIDITY) revert QRDeadlineTooFar();
+
+        (address signer, ECDSA.RecoverError err, ) = ECDSA.tryRecover(checkInDigest(tokenId, deadline), signature);
+        if (err != ECDSA.RecoverError.NoError || signer != holder) revert InvalidSignature();
+
+        t.used = true;
+        if (_listings[tokenId].seller != address(0)) {
+            delete _listings[tokenId];
+            emit ListingCancelled(tokenId);
+        }
+        emit TicketCheckedIn(tokenId, t.eventId, holder, msg.sender);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    //                          HOÀN TIỀN
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Người giữ vé rút lại giá gốc khi sự kiện bị huỷ. Vé bị burn.
+     */
+    function claimRefund(uint256 tokenId) external nonReentrant {
+        if (ownerOf(tokenId) != msg.sender) revert NotTicketOwner();
+        Ticket storage t = _tickets[tokenId];
+        EventInfo storage evt = _events[t.eventId];
+        if (!evt.cancelled) revert EventNotCancelled();
+
+        uint256 amount = t.pricePaid;
 
         // Effects
-        ticket.isForSale = false;
-        ticket.resalePrice = 0;
+        evt.revenue -= amount;
+        delete _listings[tokenId];
+        _burn(tokenId);
 
-        // Interactions — chuyển NFT
-        _transfer(seller, msg.sender, _tokenId);
-
-        // Chuyển tiền cho người bán
-        (bool sent, ) = payable(seller).call{value: msg.value}("");
-        require(sent, "Transfer to seller failed");
-
-        emit TicketResold(_tokenId, seller, msg.sender, msg.value);
-    }
-
-    /**
-     * @notice Hủy rao bán
-     */
-    function cancelResaleListing(uint256 _tokenId) external {
-        require(ownerOf(_tokenId) == msg.sender, "Not ticket owner");
-        require(tickets[_tokenId].isForSale, "Not listed for sale");
-
-        tickets[_tokenId].isForSale = false;
-        tickets[_tokenId].resalePrice = 0;
-
-        emit ResaleListingCancelled(_tokenId);
+        // Interactions
+        if (amount > 0) _sendValue(msg.sender, amount);
+        emit RefundClaimed(tokenId, msg.sender, amount);
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //               CHECK-IN — XÁC THỰC CHỮ KÝ SỐ
+    //                            VIEW
     // ═══════════════════════════════════════════════════════════════
 
-    /**
-     * @notice Soát vé bằng chữ ký số
-     * @dev Ban tổ chức gửi thông điệp challenge, người giữ vé ký bằng private key.
-     *      Contract xác thực chữ ký → đảm bảo người đó sở hữu vé.
-     *      Liên hệ mật mã bất đối xứng (khối 1 đề cương).
-     * @param _tokenId ID vé
-     * @param _messageHash Hash thông điệp challenge
-     * @param _signature Chữ ký của người giữ vé
-     */
-    function checkIn(
-        uint256 _tokenId,
-        bytes32 _messageHash,
-        bytes memory _signature
-    ) external onlyRole(ORGANIZER_ROLE) {
-        require(!tickets[_tokenId].isUsed, "Already checked in");
-
-        uint256 eventId = tickets[_tokenId].eventId;
-        require(events[eventId].isActive, "Event not active");
-
-        // Xác thực chữ ký: người ký phải là chủ vé
-        bytes32 ethSignedHash = _getEthSignedMessageHash(_messageHash);
-        address signer = _recoverSigner(ethSignedHash, _signature);
-        require(
-            signer == ownerOf(_tokenId),
-            "Invalid signature - not ticket owner"
-        );
-
-        // Đánh dấu đã sử dụng
-        tickets[_tokenId].isUsed = true;
-
-        emit TicketCheckedIn(_tokenId, signer);
+    function getEventInfo(uint256 eventId) external view eventExists(eventId) returns (EventInfo memory) {
+        return _events[eventId];
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    //                       VIEW FUNCTIONS
-    // ═══════════════════════════════════════════════════════════════
-
-    /**
-     * @notice Lấy thông tin sự kiện
-     */
-    function getEvent(uint256 _eventId) external view returns (Event memory) {
-        require(_eventId < nextEventId, "Event does not exist");
-        return events[_eventId];
+    function getTiers(uint256 eventId) external view eventExists(eventId) returns (Tier[] memory) {
+        return _tiers[eventId];
     }
 
-    /**
-     * @notice Lấy thông tin vé
-     */
-    function getTicket(uint256 _tokenId) external view returns (Ticket memory) {
-        _requireOwned(_tokenId);
-        return tickets[_tokenId];
+    function getTicket(uint256 tokenId) external view returns (Ticket memory) {
+        _requireOwned(tokenId);
+        return _tickets[tokenId];
     }
 
-    /**
-     * @notice Lấy danh sách vé của msg.sender cho sự kiện
-     */
-    function getMyTickets(
-        uint256 _eventId
-    ) external view returns (uint256[] memory) {
-        uint256 count = 0;
-
-        // Đếm số vé
-        for (uint256 i = 0; i < nextTokenId; i++) {
-            if (
-                tickets[i].eventId == _eventId &&
-                _ownerOf(i) == msg.sender
-            ) {
-                count++;
-            }
-        }
-
-        // Thu thập tokenIds
-        uint256[] memory result = new uint256[](count);
-        uint256 index = 0;
-        for (uint256 i = 0; i < nextTokenId; i++) {
-            if (
-                tickets[i].eventId == _eventId &&
-                _ownerOf(i) == msg.sender
-            ) {
-                result[index] = i;
-                index++;
-            }
-        }
-
-        return result;
+    function getListing(uint256 tokenId) external view returns (Listing memory) {
+        return _listings[tokenId];
     }
 
-    /**
-     * @notice Lấy danh sách vé đang rao bán lại cho sự kiện
-     */
-    function getResaleTickets(
-        uint256 _eventId
-    ) external view returns (uint256[] memory) {
-        uint256 count = 0;
-
-        for (uint256 i = 0; i < nextTokenId; i++) {
-            if (tickets[i].eventId == _eventId && tickets[i].isForSale) {
-                count++;
-            }
-        }
-
-        uint256[] memory result = new uint256[](count);
-        uint256 index = 0;
-        for (uint256 i = 0; i < nextTokenId; i++) {
-            if (tickets[i].eventId == _eventId && tickets[i].isForSale) {
-                result[index] = i;
-                index++;
-            }
-        }
-
-        return result;
+    /// @notice Vé tồn tại, chưa dùng và sự kiện chưa bị huỷ
+    function isTicketValid(uint256 tokenId) external view returns (bool) {
+        if (_ownerOf(tokenId) == address(0)) return false;
+        Ticket storage t = _tickets[tokenId];
+        return !t.used && !_events[t.eventId].cancelled;
     }
 
-    /**
-     * @notice Kiểm tra vé có hợp lệ (chưa sử dụng, sự kiện chưa qua)
-     */
-    function isTicketValid(uint256 _tokenId) external view returns (bool) {
-        _requireOwned(_tokenId);
-        Ticket memory ticket = tickets[_tokenId];
-        Event memory evt = events[ticket.eventId];
-        return !ticket.isUsed && evt.isActive;
+    function totalEvents() external view returns (uint256) {
+        return nextEventId - 1;
     }
 
-    /**
-     * @notice Tổng số sự kiện
-     */
-    function getTotalEvents() external view returns (uint256) {
-        return nextEventId;
+    /// @notice Metadata NFT = metadata của hạng vé (IPFS)
+    function tokenURI(uint256 tokenId) public view override returns (string memory) {
+        _requireOwned(tokenId);
+        Ticket storage t = _tickets[tokenId];
+        return _tiers[t.eventId][t.tierId].metadataURI;
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //                       ADMIN FUNCTIONS
+    //                            ADMIN
     // ═══════════════════════════════════════════════════════════════
 
-    /**
-     * @notice Tạm dừng toàn bộ giao dịch (khẩn cấp)
-     */
     function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _pause();
     }
 
-    /**
-     * @notice Mở lại giao dịch
-     */
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //                     INTERNAL FUNCTIONS
+    //                  CHẶN CHUYỂN NHƯỢNG TỰ DO
     // ═══════════════════════════════════════════════════════════════
 
-    /**
-     * @dev Prefix Ethereum Signed Message theo EIP-191
-     */
-    function _getEthSignedMessageHash(
-        bytes32 _messageHash
-    ) internal pure returns (bytes32) {
-        return
-            keccak256(
-                abi.encodePacked(
-                    "\x19Ethereum Signed Message:\n32",
-                    _messageHash
-                )
-            );
+    /// @dev Vé không thể ủy quyền cho bên thứ ba (sàn ngoài)
+    function approve(address, uint256) public pure override {
+        revert TransfersDisabled();
+    }
+
+    function setApprovalForAll(address, bool) public pure override {
+        revert TransfersDisabled();
     }
 
     /**
-     * @dev Khôi phục địa chỉ người ký từ chữ ký
-     *      Đây là phần liên hệ mật mã bất đối xứng trong đề cương
+     * @dev Mọi thay đổi chủ sở hữu đều đi qua đây.
+     *      Cho phép: mint, burn, chuyển nội bộ trong buyResale. Còn lại → revert.
      */
-    function _recoverSigner(
-        bytes32 _ethSignedHash,
-        bytes memory _signature
-    ) internal pure returns (address) {
-        require(_signature.length == 65, "Invalid signature length");
+    function _update(address to, uint256 tokenId, address auth) internal override returns (address) {
+        address from = _ownerOf(tokenId);
+        if (from != address(0) && to != address(0) && !_inMarketTransfer) revert TransfersDisabled();
 
-        bytes32 r;
-        bytes32 s;
-        uint8 v;
+        from = super._update(to, tokenId, auth);
 
-        assembly {
-            r := mload(add(_signature, 32))
-            s := mload(add(_signature, 64))
-            v := byte(0, mload(add(_signature, 96)))
-        }
-
-        if (v < 27) {
-            v += 27;
-        }
-
-        require(v == 27 || v == 28, "Invalid signature v value");
-
-        return ecrecover(_ethSignedHash, v, r, s);
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    //                       OVERRIDES
-    // ═══════════════════════════════════════════════════════════════
-
-    /**
-     * @dev Override để tự động hủy listing khi transfer
-     */
-    function _update(
-        address to,
-        uint256 tokenId,
-        address auth
-    ) internal override returns (address) {
-        address from = super._update(to, tokenId, auth);
-
-        // Nếu vé đang rao bán mà bị transfer → hủy listing
-        if (from != address(0) && to != address(0)) {
-            if (tickets[tokenId].isForSale) {
-                tickets[tokenId].isForSale = false;
-                tickets[tokenId].resalePrice = 0;
-            }
-        }
-
+        uint256 eventId = _tickets[tokenId].eventId;
+        if (from != address(0)) ownedPerEvent[eventId][from] -= 1;
+        if (to != address(0)) ownedPerEvent[eventId][to] += 1;
         return from;
     }
 
-    /**
-     * @dev Giải quyết xung đột kế thừa giữa ERC721URIStorage và AccessControl
-     */
-    function supportsInterface(
-        bytes4 interfaceId
-    ) public view override(ERC721URIStorage, AccessControl) returns (bool) {
+    // ═══════════════════════════════════════════════════════════════
+    //                          INTERNAL
+    // ═══════════════════════════════════════════════════════════════
+
+    /// @dev Vé còn được giao dịch: chưa dùng, sự kiện chưa huỷ, chưa bắt đầu
+    function _requireTradable(Ticket storage t) internal view {
+        if (t.used) revert TicketAlreadyUsed();
+        EventInfo storage evt = _events[t.eventId];
+        if (evt.cancelled) revert EventIsCancelled();
+        if (block.timestamp >= evt.startTime) revert EventAlreadyStarted();
+    }
+
+    function _sendValue(address to, uint256 amount) internal {
+        (bool ok, ) = payable(to).call{value: amount}("");
+        if (!ok) revert PaymentFailed();
+    }
+
+    function supportsInterface(bytes4 interfaceId) public view override(ERC721, AccessControl) returns (bool) {
         return super.supportsInterface(interfaceId);
     }
 }
