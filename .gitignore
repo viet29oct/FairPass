@@ -24,6 +24,11 @@ Thumbs.db
 # Backend: file upload chế độ local
 backend/uploads/
 
+# Playwright E2E output
+frontend/e2e/report/
+frontend/e2e/test-results/
+frontend/e2e/screenshots/
+
 # Frontend build
 frontend/dist/
 frontend/node_modules/

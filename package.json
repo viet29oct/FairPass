@@ -10,6 +10,7 @@
     "deploy:local": "hardhat run scripts/deploy.js --network localhost",
     "deploy:sepolia": "hardhat run scripts/deploy.js --network sepolia",
     "seed:local": "hardhat run scripts/seed.js --network localhost",
+    "faucet": "hardhat faucet --network localhost",
     "export-abi": "node scripts/export-abi.js",
     "node": "hardhat node",
     "clean": "hardhat clean"
