@@ -1,0 +1,132 @@
+// Dữ liệu ở đây chỉ là BẢN SAO (cache) của trạng thái on-chain,
+// được indexer xây lại từ event của contract EventTicketNFT.
+// Nguồn sự thật duy nhất vẫn là blockchain.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Số tiền wei lưu dạng NUMERIC(78,0) để không mất chính xác (uint256)
+model Event {
+  id               Int      @id // eventId on-chain
+  organizer        String // địa chỉ ví, lowercase
+  name             String
+  venue            String
+  startTime        DateTime
+  metadataURI      String
+  description      String?
+  image            String? // lấy từ metadata IPFS
+  maxPerWallet     Int
+  resaleCapPercent Int
+  cancelled        Boolean  @default(false)
+  withdrawn        Boolean  @default(false)
+  revenue          Decimal  @default(0) @db.Decimal(78, 0)
+  createdTx        String
+  createdAt        DateTime
+
+  tiers   Tier[]
+  tickets Ticket[]
+  staff   Staff[]
+
+  @@index([organizer])
+  @@index([startTime])
+}
+
+model Tier {
+  eventId     Int
+  tierIndex   Int
+  name        String
+  price       Decimal @db.Decimal(78, 0)
+  supply      Int
+  sold        Int     @default(0)
+  metadataURI String  @default("")
+
+  event   Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  tickets Ticket[]
+
+  @@id([eventId, tierIndex])
+}
+
+model Ticket {
+  tokenId   Int      @id
+  eventId   Int
+  tierIndex Int
+  owner     String // lowercase
+  pricePaid Decimal  @db.Decimal(78, 0)
+  used      Boolean  @default(false)
+  burned    Boolean  @default(false) // đã hoàn tiền
+  listed    Boolean  @default(false)
+  listPrice Decimal? @db.Decimal(78, 0)
+  mintedAt  DateTime
+  updatedAt DateTime @updatedAt
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  tier  Tier  @relation(fields: [eventId, tierIndex], references: [eventId, tierIndex], onDelete: Cascade)
+
+  @@index([owner])
+  @@index([eventId, listed])
+}
+
+model Staff {
+  eventId Int
+  address String // lowercase
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@id([eventId, address])
+  @@index([address])
+}
+
+model Organizer {
+  address   String   @id // lowercase
+  grantedAt DateTime
+}
+
+enum ActivityType {
+  EVENT_CREATED
+  TIER_CREATED
+  EVENT_CANCELLED
+  STAFF_UPDATED
+  PURCHASE
+  LISTED
+  LISTING_CANCELLED
+  RESOLD
+  CHECKED_IN
+  REFUNDED
+  WITHDRAWN
+  ROLE_GRANTED
+  ROLE_REVOKED
+}
+
+/// Lịch sử mọi event on-chain. (txHash, logIndex) duy nhất → indexer idempotent.
+model Activity {
+  id          Int          @id @default(autoincrement())
+  type        ActivityType
+  eventId     Int?
+  tokenId     Int?
+  from        String?
+  to          String?
+  amount      Decimal?     @db.Decimal(78, 0)
+  txHash      String
+  logIndex    Int
+  blockNumber Int
+  timestamp   DateTime
+
+  @@unique([txHash, logIndex])
+  @@index([eventId])
+  @@index([tokenId])
+}
+
+/// Tiến độ indexer (1 dòng duy nhất)
+model SyncState {
+  id              Int    @id @default(1)
+  chainId         Int
+  contractAddress String
+  deployBlockHash String // phát hiện chain local bị reset
+  lastBlock       Int
+}

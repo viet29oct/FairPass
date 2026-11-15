@@ -21,6 +21,9 @@ coverage.json
 .DS_Store
 Thumbs.db
 
+# Backend: file upload chế độ local
+backend/uploads/
+
 # Frontend build
 frontend/dist/
 frontend/node_modules/
