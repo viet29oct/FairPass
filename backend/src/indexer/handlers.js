@@ -10,16 +10,34 @@ const lc = (a) => (a ? a.toLowerCase() : a);
 const num = (v) => Number(v);
 const wei = (v) => v.toString();
 
+/**
+ * Đọc thêm dữ liệu từ chain TRƯỚC khi mở transaction DB.
+ * Không gọi RPC bên trong transaction: RPC chậm sẽ giữ kết nối Postgres và làm transaction hết hạn.
+ */
+const prefetch = {
+  async EventCreated(args, ctx) {
+    const eventId = num(args.eventId);
+    try {
+      return { info: await contract.getEventInfo(eventId, { blockTag: ctx.blockNumber }) };
+    } catch {
+      return { info: await contract.getEventInfo(eventId) };
+    }
+  },
+  async TierCreated(args, ctx) {
+    try {
+      const tiers = await contract.getTiers(num(args.eventId), { blockTag: ctx.blockNumber });
+      return { metadataURI: tiers[num(args.tierId)]?.metadataURI || "" };
+    } catch {
+      return { metadataURI: "" }; // metadata hạng vé là tuỳ chọn
+    }
+  },
+};
+
 const handlers = {
   async EventCreated(tx, args, ctx) {
     const eventId = num(args.eventId);
-    // Một số trường (venue, maxPerWallet, ...) không có trong event → đọc từ contract
-    let info;
-    try {
-      info = await contract.getEventInfo(eventId, { blockTag: ctx.blockNumber });
-    } catch {
-      info = await contract.getEventInfo(eventId);
-    }
+    // Một số trường (venue, maxPerWallet, ...) không có trong event → đã đọc ở prefetch
+    const { info } = ctx.extra;
     await tx.event.create({
       data: {
         id: eventId,
@@ -41,13 +59,7 @@ const handlers = {
   async TierCreated(tx, args, ctx) {
     const eventId = num(args.eventId);
     const tierIndex = num(args.tierId);
-    let metadataURI = "";
-    try {
-      const tiers = await contract.getTiers(eventId, { blockTag: ctx.blockNumber });
-      metadataURI = tiers[tierIndex]?.metadataURI || "";
-    } catch {
-      /* metadata hạng vé là tuỳ chọn */
-    }
+    const { metadataURI } = ctx.extra;
     await tx.tier.create({
       data: {
         eventId,
@@ -172,4 +184,4 @@ const handlers = {
   },
 };
 
-module.exports = { handlers };
+module.exports = { handlers, prefetch };

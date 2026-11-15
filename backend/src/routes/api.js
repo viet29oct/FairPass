@@ -172,13 +172,17 @@ router.get("/users/:address/roles", async (req, res) => {
     prisma.staff.findMany({ where: { address }, select: { eventId: true } }),
     prisma.event.findMany({ where: { organizer: address }, select: { id: true } }),
   ]);
-  res.json({
-    address,
-    isAdmin,
-    isOrganizer,
-    staffEventIds: staffOf.map((s) => s.eventId),
-    organizedEventIds: organizing.map((e) => e.id),
+  const staffEventIds = staffOf.map((s) => s.eventId);
+  const organizedEventIds = organizing.map((e) => e.id);
+
+  // Sự kiện ví này được soát vé (contract cho phép staff HOẶC organizer), bỏ sự kiện đã huỷ
+  const checkinEvents = await prisma.event.findMany({
+    where: { id: { in: [...new Set([...staffEventIds, ...organizedEventIds])] }, cancelled: false },
+    select: { id: true, name: true, venue: true, startTime: true },
+    orderBy: { startTime: "asc" },
   });
+
+  res.json({ address, isAdmin, isOrganizer, staffEventIds, organizedEventIds, checkinEvents });
 });
 
 // ─────────── chợ bán lại ───────────

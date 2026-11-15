@@ -6,7 +6,7 @@ const config = require("../config");
 const { prisma } = require("../db");
 const { provider, contract } = require("../chain");
 const { fetchJSON, toGatewayUrl } = require("../ipfs");
-const { handlers } = require("./handlers");
+const { handlers, prefetch } = require("./handlers");
 
 const status = { running: false, lastBlock: null, headBlock: null, lastError: null, lastSyncAt: null };
 const blockTimeCache = new Map();
@@ -75,7 +75,18 @@ async function processLog(log) {
     blockNumber: log.blockNumber,
     timestamp: await blockTime(log.blockNumber),
     afterCommit: [],
+    extra: {},
   };
+
+  // Bỏ qua sớm nếu log đã xử lý (tránh gọi RPC prefetch thừa khi index lại)
+  const done = await prisma.activity.findUnique({
+    where: { txHash_logIndex: { txHash: ctx.txHash, logIndex: ctx.logIndex } },
+    select: { id: true },
+  });
+  if (done) return;
+
+  // Mọi lời gọi RPC thực hiện NGOÀI transaction DB
+  if (prefetch[name]) ctx.extra = await prefetch[name](log.args, ctx);
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -90,7 +101,7 @@ async function processLog(log) {
           timestamp: ctx.timestamp,
         },
       });
-    });
+    }, { maxWait: 10_000, timeout: 15_000 });
   } catch (err) {
     if (err.code === "P2002") return; // log đã được xử lý trước đó
     throw err;
